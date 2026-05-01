@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Virtual env
+.venv/
+
+# Сгенерированные визуализации
+output/
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
