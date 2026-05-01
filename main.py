@@ -87,6 +87,27 @@ class ViewshedParams(BaseModel):
 ViewshedQuery = Annotated[ViewshedParams, Query()]
 
 
+def _resolve_request(
+    params: ViewshedParams,
+) -> tuple[float, float, float, float, np.ndarray]:
+    """
+    Достаёт heights из app.state и валидирует, что станция в границах
+    матрицы. Pydantic уже проверил `h ≥ 0` и `r > 0`; здесь — только
+    проверка границ, которую нельзя выразить в схеме.
+    """
+    heights = app.state.heights
+    rows, cols = heights.shape
+    if not (0 <= params.x < cols and 0 <= params.y < rows):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Станция вне границ матрицы. Допустимо: "
+                f"x ∈ [0, {cols}), y ∈ [0, {rows})."
+            ),
+        )
+    return params.x, params.y, params.h, params.r, heights
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
@@ -175,18 +196,7 @@ def get_viewshed_geojson(params: ViewshedQuery):
     (R3 + билинейная интерполяция + 3D-радиус). Геометрия — MultiPoint
     в координатах узлов сетки.
     """
-    x, y, h, r = params.x, params.y, params.h, params.r
-    heights = app.state.heights
-    rows, cols = heights.shape
-
-    if not (0 <= x < cols and 0 <= y < rows):
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Станция вне границ матрицы. Допустимо: "
-                f"x ∈ [0, {cols}), y ∈ [0, {rows})."
-            ),
-        )
+    x, y, h, r, heights = _resolve_request(params)
 
     is_visible = compute_viewshed(
         heights=heights,
@@ -206,7 +216,7 @@ def get_viewshed_geojson(params: ViewshedQuery):
             "station_height": h,
             "radius": r,
             "visible_points": int(is_visible.sum()),
-            "total_points": int(rows * cols),
+            "total_points": int(heights.size),
             "algorithm": "vectorized_numpy",
         },
     )
@@ -224,15 +234,7 @@ def get_viewshed_visualization(params: ViewshedQuery):
     """
     Возвращает PNG-картинку: рельеф + зона видимости + GeoJSON-полигон.
     """
-    x, y, h, r = params.x, params.y, params.h, params.r
-    heights = app.state.heights
-    rows, cols = heights.shape
-
-    if not (0 <= x < cols and 0 <= y < rows):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Станция вне границ матрицы [0, {cols}) x [0, {rows}).",
-        )
+    x, y, h, r, heights = _resolve_request(params)
 
     is_visible = compute_viewshed(
         heights=heights,
@@ -274,15 +276,7 @@ def get_viewshed_aw_geojson(params: ViewshedQuery):
     скомпилирована LLVM через numba — на больших матрицах кратно
     быстрее векторизованной.
     """
-    x, y, h, r = params.x, params.y, params.h, params.r
-    heights = app.state.heights
-    rows, cols = heights.shape
-
-    if not (0 <= x < cols and 0 <= y < rows):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Станция вне границ матрицы [0, {cols}) x [0, {rows}).",
-        )
+    x, y, h, r, heights = _resolve_request(params)
 
     is_visible = compute_viewshed_aw(heights, x, y, h, r)
     geometry = visibility_to_multipoint(is_visible)
@@ -295,7 +289,7 @@ def get_viewshed_aw_geojson(params: ViewshedQuery):
             "station_height": h,
             "radius": r,
             "visible_points": int(is_visible.sum()),
-            "total_points": int(rows * cols),
+            "total_points": int(heights.size),
             "algorithm": "amanatides_woo_numba",
         },
     )
@@ -311,15 +305,7 @@ def get_viewshed_aw_geojson(params: ViewshedQuery):
 @app.get("/viewshed/aw/visualize", tags=["viewshed"])
 def get_viewshed_aw_visualization(params: ViewshedQuery):
     """PNG-визуализация результата Amanatides–Woo."""
-    x, y, h, r = params.x, params.y, params.h, params.r
-    heights = app.state.heights
-    rows, cols = heights.shape
-
-    if not (0 <= x < cols and 0 <= y < rows):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Станция вне границ матрицы [0, {cols}) x [0, {rows}).",
-        )
+    x, y, h, r, heights = _resolve_request(params)
 
     is_visible = compute_viewshed_aw(heights, x, y, h, r)
     geometry = visibility_to_multipoint(is_visible)
@@ -352,15 +338,7 @@ def get_viewshed_loop_geojson(params: ViewshedQuery):
     3D-радиус), отличается только реализация. Полезен как эталон для
     сверки и для понимания «что под капотом».
     """
-    x, y, h, r = params.x, params.y, params.h, params.r
-    heights = app.state.heights
-    rows, cols = heights.shape
-
-    if not (0 <= x < cols and 0 <= y < rows):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Станция вне границ матрицы [0, {cols}) x [0, {rows}).",
-        )
+    x, y, h, r, heights = _resolve_request(params)
 
     is_visible = compute_viewshed_loop(
         heights=heights,
@@ -380,7 +358,7 @@ def get_viewshed_loop_geojson(params: ViewshedQuery):
             "station_height": h,
             "radius": r,
             "visible_points": int(is_visible.sum()),
-            "total_points": int(rows * cols),
+            "total_points": int(heights.size),
             "algorithm": "python_loop",
         },
     )
@@ -396,15 +374,7 @@ def get_viewshed_loop_geojson(params: ViewshedQuery):
 @app.get("/viewshed/loop/visualize", tags=["viewshed"])
 def get_viewshed_loop_visualization(params: ViewshedQuery):
     """PNG-визуализация результата Python-loop."""
-    x, y, h, r = params.x, params.y, params.h, params.r
-    heights = app.state.heights
-    rows, cols = heights.shape
-
-    if not (0 <= x < cols and 0 <= y < rows):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Станция вне границ матрицы [0, {cols}) x [0, {rows}).",
-        )
+    x, y, h, r, heights = _resolve_request(params)
 
     is_visible = compute_viewshed_loop(
         heights=heights,
